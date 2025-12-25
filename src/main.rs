@@ -2,6 +2,7 @@ use std::fmt::{Debug, Formatter};
 use std::ops::{Add, Mul, RangeInclusive};
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Receiver;
+use macroquad::color::hsl_to_rgb;
 use macroquad::prelude::*;
 use rayon::prelude::*;
 use Divergence::*;
@@ -12,8 +13,10 @@ const MAX_RADIUS: f64 = 500.0;
 
 /// Mandelbrot Viewer
 /// DONE: parallelize the computation of the divergence
-/// TODO: save the result of the computation to an image
-/// TODO: compute the color of the background based on the result of the iteration
+/// DONE: save the result of the computation to an image
+/// DONE: compute the color of the background based on the result of the iteration
+/// TODO: implement zoom with wheel and mouse position
+/// TODO: make zoom framerate independent
 #[macroquad::main("Mandelbrot Viewer")]
 async fn main() {
     // let's say canva goes from -2 to 1 and -i to i
@@ -83,6 +86,7 @@ fn parallel_draw_image(
     let (tx, rx) = std::sync::mpsc::channel();
     let canva_x = canva_x.clone();
     let canva_y = canva_y.clone();
+    let color_scale = color_scale();
     std::thread::spawn(move || {
         (0..image_width * image_height)
             .into_par_iter()
@@ -105,13 +109,21 @@ fn parallel_draw_image(
             .iter().enumerate()
             .for_each(|(i, d)| {
                 image.lock().unwrap().set_pixel((i % image_width) as u32, (i / image_width) as u32, match *d {
-                    After(_) => WHITE,
+                    After(j) => hsl_to_rgb(color_scale[j], 1.0, 0.5),
                     Never => BLACK,
                 });
             });
         let _ = tx.send(image);
     });
     rx
+}
+
+fn color_scale() -> [f32; MAX_ITER] {
+    let mut res = [0.0; MAX_ITER];
+    for i in 0..MAX_ITER {
+        res[i] = (i as f32) / (MAX_ITER) as f32;
+    }
+    res
 }
 
 trait RangeExt {
