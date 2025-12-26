@@ -7,14 +7,14 @@ use macroquad::prelude::*;
 use rayon::prelude::*;
 use Divergence::*;
 
-const MAX_ITER: usize = 64;
+const MAX_ITER: usize = 1024;
 const MAX_RADIUS: f64 = 2.0;
+const MOVE_AMOUNT: f64 = 0.1;
 
 /// Mandelbrot Viewer
 /// DONE: parallelize the computation of the divergence
 /// DONE: save the result of the computation to an image
 /// DONE: compute the color of the background based on the result of the iteration
-/// TODO: implement zoom with wheel and mouse position
 /// TODO: make zoom framerate independent
 #[macroquad::main("Mandelbrot Viewer")]
 async fn main() {
@@ -56,6 +56,8 @@ async fn main() {
         }
 
         draw_texture(&texture, 0.0, 0.0, WHITE);
+        draw_rectangle(0.0, 0.0, 72.0, 24.0, WHITE);
+        draw_text(&max_iter.to_string(), 10.0, 20.0, 20.0, BLACK);
         next_frame().await;
     }
 }
@@ -74,19 +76,19 @@ fn handle_key_pressed(max_iter: &mut usize, center: &mut Complex<f64>, zoom: &mu
         changed = true;
     }
     if is_key_pressed(KeyCode::Up) {
-        center.im -= 0.05 * *zoom;
+        center.im -= MOVE_AMOUNT * *zoom;
         changed = true;
     }
     if is_key_pressed(KeyCode::Down) {
-        center.im += 0.05 * *zoom;
+        center.im += MOVE_AMOUNT * *zoom;
         changed = true;
     }
     if is_key_pressed(KeyCode::Left) {
-        center.re -= 0.05 * *zoom;
+        center.re -= MOVE_AMOUNT * *zoom;
         changed = true;
     }
     if is_key_pressed(KeyCode::Right) {
-        center.re += 0.05 * *zoom;
+        center.re += MOVE_AMOUNT * *zoom;
         changed = true;
     }
 
