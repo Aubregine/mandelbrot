@@ -1,6 +1,5 @@
 use std::fmt::{Debug, Formatter};
 use std::ops::{Add, AddAssign, Mul, Sub};
-use std::process::Output;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Receiver;
 use macroquad::color::hsl_to_rgb;
@@ -8,8 +7,8 @@ use macroquad::prelude::*;
 use rayon::prelude::*;
 use Divergence::*;
 
-const MAX_ITER: usize = 200;
-const MAX_RADIUS: f64 = 5.0;
+const MAX_ITER: usize = 64;
+const MAX_RADIUS: f64 = 2.0;
 
 /// Mandelbrot Viewer
 /// DONE: parallelize the computation of the divergence
@@ -65,29 +64,29 @@ fn handle_key_pressed(max_iter: &mut usize, center: &mut Complex<f64>, zoom: &mu
     let mut changed = false;
 
     if is_key_pressed(KeyCode::KpAdd) {
-        *zoom /= 1.2;
-        *max_iter = (*max_iter as f32 * 1.12) as usize;
+        *zoom /= 2.0;
+        *max_iter = (*max_iter as f32 * 1.1) as usize; // this is also an issue
         changed = true;
     }
     if is_key_pressed(KeyCode::KpSubtract) {
-        *zoom *= 1.2;
-        *max_iter = (*max_iter as f32 * 0.88) as usize;
+        *zoom *= 2.0;
+        *max_iter = (*max_iter as f32 / 1.1) as usize;
         changed = true;
     }
     if is_key_pressed(KeyCode::Up) {
-        center.im -= 0.01;
+        center.im -= 0.05 * *zoom;
         changed = true;
     }
     if is_key_pressed(KeyCode::Down) {
-        center.im += 0.01;
+        center.im += 0.05 * *zoom;
         changed = true;
     }
     if is_key_pressed(KeyCode::Left) {
-        center.re -= 0.01;
+        center.re -= 0.05 * *zoom;
         changed = true;
     }
     if is_key_pressed(KeyCode::Right) {
-        center.re += 0.01;
+        center.re += 0.05 * *zoom;
         changed = true;
     }
 
@@ -105,6 +104,8 @@ fn handle_key_pressed(max_iter: &mut usize, center: &mut Complex<f64>, zoom: &mu
     } else { None }
 }
 
+
+
 fn parallel_draw_image(
     image: Arc<Mutex<Image>>,
     canva_x: &Range<f64>,
@@ -116,30 +117,40 @@ fn parallel_draw_image(
     let (tx, rx) = std::sync::mpsc::channel();
     let canva_x = canva_x.clone();
     let canva_y = canva_y.clone();
+    let scale_x = canva_x.size() / (image_width as f64 - 1.0);
+    let scale_y = canva_y.size() / (image_height as f64 - 1.0);
+
     std::thread::spawn(move || {
-        (0..image_width * image_height)
-            .into_par_iter()
-            // cut in chunks
-            .by_uniform_blocks(image_width)
-            .map(|i| {
-                let x = i % image_width;
-                let y = i / image_width;
-
+        let mut buffer = vec![Never; image_width * image_height];
+        buffer
+            .par_chunks_mut(image_width)
+            .enumerate()
+            .for_each(|(y, row)| {
                 // precision bottleneck
-                let re: f64 = canva_x.start + (x as f64 * canva_x.size() / (image_width - 1) as f64);
-                let im: f64 = canva_y.start + (y as f64 * canva_y.size() / (image_height - 1) as f64);
+                let im: f64 = canva_y.start + y as f64 * scale_y;
+                for (x, div) in row.iter_mut().enumerate() {
+                    let re: f64 = canva_x.start + x as f64 * scale_x;
 
-                let div = iterate(Complex { re, im }, max_iter, MAX_RADIUS);
+                    let x_minus_025 = re - 0.25;
+                    let y2 = im * im;
+                    let q = x_minus_025 * x_minus_025 + y2;
 
-                image.lock().unwrap().set_pixel((i % image_width) as u32, (i / image_width) as u32, match div {
-                    // After(j) => hsl_to_rgb(j, 1.0, 0.5),
-                    After(j) => Color::new(j, j, j, 1.0),
-                    Never => BLACK,
-                });
-            })
-            // reunite the chunks
-            .fold(Vec::new, |mut acc, div| { acc.push(div); acc})
-            .reduce(Vec::new, |mut acc, mut chunk| { acc.append(&mut chunk); acc});
+                    *div = if q * (q + x_minus_025) < 0.25 * y2 || (im + 1.0) * (im + 1.0) + y2 < 0.0625 {
+                        Never
+                    } else {
+                        iterate(Complex { re, im }, max_iter, MAX_RADIUS)
+                    }
+                }
+            });
+
+        // this takes time it seems
+        for (i, div) in buffer.iter().enumerate() {
+            image.lock().unwrap().set_pixel((i % image_width) as u32, (i / image_width) as u32, match *div {
+                After(j) => hsl_to_rgb(j, 1.0, 0.5),
+                // After(j) => Color::new(j, j, j, 1.0),
+                Never => BLACK,
+            });
+        }
         let _ = tx.send(image);
     });
     rx
@@ -171,6 +182,7 @@ impl Range<f64> {
     }
 }
 
+#[derive(Clone)]
 enum Divergence {
     After(f32),
     Never,
