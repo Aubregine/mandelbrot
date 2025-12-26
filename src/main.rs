@@ -1,5 +1,5 @@
 use std::fmt::{Debug, Formatter};
-use std::ops::{Add, AddAssign, Mul, Sub};
+use std::ops::{Add, Mul};
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Receiver;
 use macroquad::color::hsl_to_rgb;
@@ -7,7 +7,7 @@ use macroquad::prelude::*;
 use rayon::prelude::*;
 use Divergence::*;
 
-const MAX_ITER: usize = 1024;
+const MAX_ITER: usize = 256;
 const MAX_RADIUS: f64 = 2.0;
 const MOVE_AMOUNT: f64 = 0.1;
 
@@ -62,7 +62,7 @@ async fn main() {
     }
 }
 
-fn handle_key_pressed(max_iter: &mut usize, center: &mut Complex<f64>, zoom: &mut f64, image_x: u16, image_y: u16, image: &Arc<Mutex<Image>>) -> Option<Receiver<Arc<Mutex<Image>>>> {
+fn handle_key_pressed(max_iter: &mut usize, center: &mut Complex, zoom: &mut f64, image_x: u16, image_y: u16, image: &Arc<Mutex<Image>>) -> Option<Receiver<Arc<Mutex<Image>>>> {
     let mut changed = false;
 
     if is_key_pressed(KeyCode::KpAdd) {
@@ -109,9 +109,9 @@ fn handle_key_pressed(max_iter: &mut usize, center: &mut Complex<f64>, zoom: &mu
 
 
 fn parallel_draw_image(
-    image: Arc<Mutex<Image>>,
-    canva_x: &Range<f64>,
-    canva_y: &Range<f64>,
+    image_arc: Arc<Mutex<Image>>,
+    canva_x: &Range,
+    canva_y: &Range,
     image_width: usize,
     image_height: usize,
     max_iter: usize,
@@ -123,62 +123,51 @@ fn parallel_draw_image(
     let scale_y = canva_y.size() / (image_height as f64 - 1.0);
 
     std::thread::spawn(move || {
-        let mut buffer = vec![Never; image_width * image_height];
-        buffer
+        let mut image = image_arc.lock().unwrap();
+        let pixels = image.get_image_data_mut();
+        pixels
             .par_chunks_mut(image_width)
             .enumerate()
             .for_each(|(y, row)| {
                 // precision bottleneck
                 let im: f64 = canva_y.start + y as f64 * scale_y;
-                for (x, div) in row.iter_mut().enumerate() {
+                for (x, pixel) in row.iter_mut().enumerate() {
                     let re: f64 = canva_x.start + x as f64 * scale_x;
 
                     let x_minus_025 = re - 0.25;
                     let y2 = im * im;
                     let q = x_minus_025 * x_minus_025 + y2;
 
-                    *div = if q * (q + x_minus_025) < 0.25 * y2 || (im + 1.0) * (im + 1.0) + y2 < 0.0625 {
+                    // optimization I found on internet, I haven't checked the math
+                    let div = if q * (q + x_minus_025) < 0.25 * y2 || (im + 1.0) * (im + 1.0) + y2 < 0.0625 {
                         Never
                     } else {
                         iterate(Complex { re, im }, max_iter, MAX_RADIUS)
+                    };
+
+                    // directly set the raw pixel data
+                    *pixel = match div {
+                        After(j) => {
+                            let val = (j * 255.0) as u8;
+                            [val, val, val, 255] // grey
+                        },
+                        Never => [0, 0, 0, 255], // black
                     }
                 }
             });
 
-        // this takes time it seems
-        for (i, div) in buffer.iter().enumerate() {
-            image.lock().unwrap().set_pixel((i % image_width) as u32, (i / image_width) as u32, match *div {
-                After(j) => hsl_to_rgb(j, 1.0, 0.5),
-                // After(j) => Color::new(j, j, j, 1.0),
-                Never => BLACK,
-            });
-        }
-        let _ = tx.send(image);
+        let _ = tx.send(image_arc.clone());
     });
     rx
 }
 
 #[derive(Copy, Clone)]
-struct Range<T> {
-    start: T,
-    end: T,
+struct Range {
+    start: f64,
+    end: f64,
 }
 
-impl<T> Add<T> for Range<T> where T: Add<Output = T> + Copy {
-    type Output = Self;
-    fn add(self, offset: T) -> Self {
-        Range { start: self.start + offset, end: self.end + offset }
-    }
-}
-
-impl<T> AddAssign<T> for Range<T> where T: Add + AddAssign + Copy {
-    fn add_assign(&mut self, offset: T) {
-        self.start += offset;
-        self.end += offset;
-    }
-}
-
-impl Range<f64> {
+impl Range {
     fn size(&self) -> f64 {
         self.end - self.start
     }
@@ -190,8 +179,7 @@ enum Divergence {
     Never,
 }
 
-fn iterate<T>(c: Complex<T>, max_iter: usize, max_radius: f64) -> Divergence
-where T: Add<Output = T> + Mul<Output = T> + Sub<Output = T> + Copy + PartialOrd + Into<f64>
+fn iterate(c: Complex, max_iter: usize, max_radius: f64) -> Divergence
 {
     let mut z = c;
     for i in 0..max_iter {
@@ -207,24 +195,24 @@ where T: Add<Output = T> + Mul<Output = T> + Sub<Output = T> + Copy + PartialOrd
 }
 
 #[derive(Copy, Clone)]
-struct Complex<T> {
-    re: T,
-    im: T,
+struct Complex {
+    re: f64,
+    im: f64,
 }
 
-impl<T> Complex<T> where T: Mul<Output = T> + Add<Output = T> + Copy + Into<f64> {
+impl Complex {
     fn module_sqr(&self) -> f64 {
-        f64::try_from(self.re * self.re + self.im * self.im).unwrap_or(f64::INFINITY)
+        self.re * self.re + self.im * self.im
     }
 }
 
-impl<T> Debug for Complex<T> where T: Debug {
+impl Debug for Complex {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}+{:?}i", self.re, self.im)
     }
 }
 
-impl<T> Mul for Complex<T> where T: Mul<Output = T> + Add<Output = T> + Sub<Output = T> + Copy {
+impl Mul for Complex {
     type Output = Self;
     fn mul(self, other: Self) -> Self::Output {
         Complex {
@@ -234,7 +222,7 @@ impl<T> Mul for Complex<T> where T: Mul<Output = T> + Add<Output = T> + Sub<Outp
     }
 }
 
-impl<T> Add for Complex<T> where T: Add<Output = T> + Copy {
+impl Add for Complex {
     type Output = Self;
     fn add(self, other: Self) -> Self::Output {
         Complex {
