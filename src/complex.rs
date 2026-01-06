@@ -35,13 +35,13 @@ impl Complex {
     }
 }
 
-pub fn iterate(c: Complex) -> usize {
+pub fn iterate(c: Complex) -> bool {
     let mut z = Complex(0.0, 0.0);
     for n in 0..MAX_ITER {
         z = z * z + c;
         if z.norm() > 2.0 {
-            return n;
+            return false;
         }
     }
-    MAX_ITER
+    true
 }
